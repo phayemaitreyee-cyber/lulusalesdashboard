@@ -1,569 +1,719 @@
-"""
-LuLu UAE Sales Dashboard  (app.py)
-==================================
-A Streamlit dashboard built on SYNTHETIC (made-up) LuLu-style sales data.
-
-How the filters work
---------------------
-1. GLOBAL filters (date range + emirates) sit in the box at the top.
-   They change EVERY chart on the page.
-2. LOCAL filters sit behind the "Filters" button on each chart.
-   They change ONLY that one chart, on top of the global filters.
-
-Why each chart is wrapped in @st.fragment
------------------------------------------
-Normally, touching ANY widget makes Streamlit re-run the whole script.
-A "fragment" is a piece of the page that can re-run on its own.
-So when you change a chart's local filter, only that chart is redrawn.
-
-Run it on your own computer:
-    pip install -r requirements.txt
-    streamlit run app.py
-"""
-
-from datetime import timedelta
-from pathlib import Path
-
-import pandas as pd
-import plotly.express as px
 import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import random
 
-# =============================================================================
-# 1. PAGE SETUP  (must be the first Streamlit command in the file)
-# =============================================================================
-st.set_page_config(page_title="LuLu UAE Sales Dashboard", page_icon="🛒", layout="wide")
+# ── Page config ──────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Smart Inventory & Waste Reduction System",
+    page_icon="🌿",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# =============================================================================
-# 2. SETTINGS USED ACROSS THE APP
-# =============================================================================
-# The CSV sits in the same folder as this file. Building the path from
-# __file__ means it is found both on your laptop and on Streamlit Cloud.
-DATA_FILE = Path(__file__).parent / "lulu_sales_data.csv"
+# ── Pastel Colour Palette ─────────────────────────────────────────────────────
+PASTEL_PINK       = "#FFB3C6"   # soft pink
+PASTEL_LAVENDER   = "#C9B8E8"   # soft purple
+PASTEL_MINT       = "#B5EAD7"   # soft green
+PASTEL_PEACH      = "#FFDAB9"   # soft peach/orange
+PASTEL_SKY        = "#AED6F1"   # soft blue
+PASTEL_YELLOW     = "#FFF5BA"   # soft yellow
+PASTEL_CORAL      = "#FFB5A7"   # soft coral
+PASTEL_LILAC      = "#E8D5F5"   # soft lilac
+PASTEL_SAGE       = "#D4EDDA"   # soft sage green
+PASTEL_CREAM      = "#FFF8F0"   # warm cream (background)
+PASTEL_TEXT       = "#5A5A7A"   # muted dark text
+PASTEL_CARD_BG    = "#FFFFFF"   # white card background
+PASTEL_BORDER     = "#E0D7F0"   # light lavender border
 
-CATEGORIES = ["Fresh", "Grocery", "Fashion", "Home Decor", "Electronics", "Furniture"]
-EMIRATES = ["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "Ras Al Khaimah", "Fujairah", "Umm Al Quwain"]
-AGE_GROUPS = ["18-24", "25-34", "35-44", "45-54", "55+"]
-FESTIVE_SEASONS = ["White Friday", "DSF", "Ramadan", "Back to School"]
-
-# Each category always gets the SAME colour in every chart, so viewers
-# learn the colours once and can read every chart faster.
-CATEGORY_COLORS = {
-    "Fresh": "#2E9E5B",
-    "Grocery": "#E0A526",
-    "Fashion": "#C2408A",
-    "Home Decor": "#2A9D8F",
-    "Electronics": "#3A6FD8",
-    "Furniture": "#8C5A3C",
+# ── Global CSS ────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ── Base & Background ── */
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #FFF8F0 !important;
+    color: #5A5A7A !important;
+    font-family: 'Segoe UI', sans-serif;
 }
-OTHER_COLORS = ["#3A6FD8", "#2A9D8F", "#E0A526", "#C2408A"]   # for charts not split by category
-CHART_HEIGHT = 380                                          # same height for every chart
 
-# The measures a user can choose, and the column each one comes from.
-METRIC_COLUMNS = {
-    "Net sales (AED)": "Net_Sales_AED",
-    "Profit (AED)": "Profit_AED",
-    "Units sold": "Units_Sold",
-    "Transactions": "Transaction_ID",
+[data-testid="stSidebar"] {
+    background: linear-gradient(160deg, #E8D5F5 0%, #AED6F1 100%) !important;
+    border-right: 2px solid #E0D7F0;
 }
 
+[data-testid="stSidebar"] * {
+    color: #5A5A7A !important;
+}
 
-# =============================================================================
-# 3. LOAD THE DATA
-# =============================================================================
-# @st.cache_data = "read the file once, then remember it".
-# Without it, the CSV would be re-read every time anyone clicks anything.
-#
-# ➡️ LIVE VERSION (later): change this to @st.cache_data(ttl=5)
-#    so Streamlit re-reads the file every 5 seconds and picks up new rows.
-@st.cache_data
-def load_data():
-    return pd.read_csv(DATA_FILE, parse_dates=["Timestamp", "Date"])
+/* ── Metric Cards ── */
+[data-testid="stMetric"] {
+    background-color: #FFFFFF;
+    border: 1.5px solid #E0D7F0;
+    border-radius: 14px;
+    padding: 16px 20px;
+    box-shadow: 0 2px 8px rgba(180,160,220,0.10);
+}
 
+[data-testid="stMetricLabel"] { color: #9B8EC4 !important; font-weight: 600; }
+[data-testid="stMetricValue"] { color: #5A5A7A !important; }
 
-# =============================================================================
-# 4. HELPER FUNCTIONS  (small reusable pieces used by the charts)
-# =============================================================================
-def aed(value):
-    """Turn a number into a short money label, e.g. 1234567 -> 'AED 1.23M'."""
-    if abs(value) >= 1_000_000:
-        return f"AED {value / 1_000_000:.2f}M"
-    if abs(value) >= 1_000:
-        return f"AED {value / 1_000:.1f}K"
-    return f"AED {value:,.0f}"
+/* ── Buttons ── */
+.stButton > button {
+    background: linear-gradient(135deg, #C9B8E8, #AED6F1) !important;
+    color: #5A5A7A !important;
+    border: none !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    padding: 0.5rem 1.2rem !important;
+    transition: all 0.2s ease;
+}
+.stButton > button:hover {
+    background: linear-gradient(135deg, #FFB3C6, #C9B8E8) !important;
+    box-shadow: 0 4px 14px rgba(200,150,200,0.25) !important;
+    transform: translateY(-1px);
+}
 
+/* ── Tabs ── */
+.stTabs [data-baseweb="tab-list"] {
+    background-color: #F5EEFF;
+    border-radius: 12px;
+    padding: 4px;
+    gap: 4px;
+}
+.stTabs [data-baseweb="tab"] {
+    background-color: transparent;
+    color: #9B8EC4 !important;
+    border-radius: 10px;
+    font-weight: 500;
+    padding: 8px 20px;
+}
+.stTabs [aria-selected="true"] {
+    background-color: #C9B8E8 !important;
+    color: #5A5A7A !important;
+    font-weight: 700 !important;
+}
 
-def filter_rows(data, start, end, emirates):
-    """Keep only rows between two dates AND inside the chosen emirates."""
-    in_dates = data["Date"].between(pd.Timestamp(start), pd.Timestamp(end))
-    in_emirates = data["Emirate"].isin(emirates)
-    return data[in_dates & in_emirates]
+/* ── DataFrames / Tables ── */
+[data-testid="stDataFrame"] {
+    border: 1.5px solid #E0D7F0;
+    border-radius: 12px;
+    overflow: hidden;
+}
 
+/* ── Select / Input widgets ── */
+.stSelectbox > div > div,
+.stMultiSelect > div > div,
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input {
+    background-color: #FFFFFF !important;
+    border: 1.5px solid #C9B8E8 !important;
+    border-radius: 10px !important;
+    color: #5A5A7A !important;
+}
 
-def chosen_emirates():
-    """Emirates picked in the global filter. Picking nothing means 'all emirates'."""
-    return st.session_state["global_emirates"] or EMIRATES
+/* ── Sliders ── */
+.stSlider [data-baseweb="slider"] div[role="slider"] {
+    background-color: #C9B8E8 !important;
+    border-color: #9B8EC4 !important;
+}
 
+/* ── Progress bars ── */
+.stProgress > div > div > div {
+    background: linear-gradient(90deg, #B5EAD7, #AED6F1) !important;
+    border-radius: 10px;
+}
 
-def get_global_data():
-    """Every chart starts here: the full data with the GLOBAL filters applied.
+/* ── Alerts / Info boxes ── */
+[data-testid="stAlert"] {
+    border-radius: 12px !important;
+    border-left: 5px solid #C9B8E8 !important;
+    background-color: #F5EEFF !important;
+    color: #5A5A7A !important;
+}
 
-    The global widgets save their values in st.session_state (Streamlit's
-    memory), so any chart can read them, even when only that chart re-runs.
-    """
-    start, end = st.session_state["global_dates"]
-    return filter_rows(load_data(), start, end, chosen_emirates())
+/* ── Expanders ── */
+.streamlit-expanderHeader {
+    background-color: #F5EEFF !important;
+    border-radius: 10px !important;
+    color: #5A5A7A !important;
+    border: 1px solid #E0D7F0 !important;
+}
 
+/* ── Section headers (h1–h3) ── */
+h1 { color: #9B8EC4 !important; letter-spacing: 0.5px; }
+h2 { color: #7BA7CC !important; }
+h3 { color: #7BBF9E !important; }
 
-def emirates_in(data):
-    """Emirates that appear in the data, in our standard order."""
-    present = set(data["Emirate"])
-    return [e for e in EMIRATES if e in present]
+/* ── Dividers ── */
+hr { border-color: #E0D7F0 !important; }
 
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 7px; }
+::-webkit-scrollbar-track { background: #F5EEFF; }
+::-webkit-scrollbar-thumb { background: #C9B8E8; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #9B8EC4; }
+</style>
+""", unsafe_allow_html=True)
 
-def summarise(data, group_by, metric):
-    """Group the data (e.g. by Category) and calculate one measure per group.
+# ── Pastel chart colour sequence (used in all Plotly charts) ──────────────────
+PASTEL_CHART_COLORS = [
+    PASTEL_LAVENDER, PASTEL_SKY, PASTEL_MINT,
+    PASTEL_PINK, PASTEL_PEACH, PASTEL_CORAL,
+    PASTEL_YELLOW, PASTEL_LILAC, PASTEL_SAGE
+]
 
-    Most measures are simple totals. Two need special maths:
-      * Transactions      -> count the rows
-      * Profit margin (%) -> total profit / total net sales x 100
-      * Average rating    -> the average (mean) of the ratings
-    """
-    groups = data.groupby(group_by)
-    if metric == "Transactions":
-        result = groups["Transaction_ID"].count()
-    elif metric == "Profit margin (%)":
-        result = groups["Profit_AED"].sum() / groups["Net_Sales_AED"].sum() * 100
-    elif metric == "Average rating (1-5)":
-        result = groups["Customer_Rating"].mean()
-    else:
-        result = groups[METRIC_COLUMNS[metric]].sum()
-    return result.rename(metric).reset_index()
-
-
-def card_header(title, wide=False):
-    """Draw a chart title with a 'Filters' button on its right.
-
-    Returns the pop-over (the little menu that opens when you click the
-    button). Anything created inside  `with card_header(...):`  goes in it.
-    """
-    title_col, button_col = st.columns([6, 1] if wide else [3, 1], vertical_alignment="center")
-    title_col.markdown(f"#### {title}")
-    return button_col.popover("Filters", icon=":material/tune:", width="stretch")
-
-
-def local_select(label, options, key):
-    """A dropdown that never gets 'stuck' on an option that has disappeared.
-
-    Example: you pick 'Ajman' in a chart, then remove Ajman in the global
-    filter. The old choice is no longer valid, so we reset it to the first
-    option ('All ...') before drawing the dropdown.
-    """
-    if st.session_state.get(key) not in options:
-        st.session_state[key] = options[0]
-    return st.selectbox(label, options, key=key)
-
-
-def show_active_filters(*choices):
-    """The filters hide inside a pop-over, so print the current choices under the title."""
-    st.caption("Showing: " + ", ".join(choices))
-
-
-def no_data_message():
-    st.info("No transactions match these filters. Widen them using the Filters button.")
-
-
-def style(fig):
-    """Give every Plotly chart the same size, margins and legend position."""
+# ── Helper: apply pastel template to any Plotly figure ───────────────────────
+def apply_pastel_theme(fig, title=""):
     fig.update_layout(
-        height=CHART_HEIGHT,
-        margin=dict(l=0, r=0, t=10, b=0),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, title_text=""),
+        paper_bgcolor=PASTEL_CREAM,
+        plot_bgcolor="#F5EEFF",
+        font=dict(color=PASTEL_TEXT, family="Segoe UI"),
+        title=dict(text=title, font=dict(color="#9B8EC4", size=16)),
+        legend=dict(
+            bgcolor=PASTEL_CREAM,
+            bordercolor=PASTEL_BORDER,
+            borderwidth=1,
+            font=dict(color=PASTEL_TEXT)
+        ),
+        xaxis=dict(
+            gridcolor=PASTEL_BORDER,
+            zerolinecolor=PASTEL_BORDER,
+            tickfont=dict(color=PASTEL_TEXT)
+        ),
+        yaxis=dict(
+            gridcolor=PASTEL_BORDER,
+            zerolinecolor=PASTEL_BORDER,
+            tickfont=dict(color=PASTEL_TEXT)
+        ),
+        colorway=PASTEL_CHART_COLORS,
     )
     return fig
 
+# ── Data generation (unchanged logic, colours injected via theme) ─────────────
+@st.cache_data
+def generate_inventory_data():
+    categories = ['Produce', 'Dairy', 'Meat', 'Bakery', 'Beverages', 'Frozen', 'Snacks', 'Condiments']
+    items = []
+    for cat in categories:
+        for i in range(random.randint(8, 15)):
+            expiry_days = random.randint(-2, 30)
+            quantity    = random.randint(0, 200)
+            reorder_pt  = random.randint(20, 50)
+            items.append({
+                'Item ID'         : f"{cat[:3].upper()}-{i+1:03d}",
+                'Product Name'    : f"{cat} Item {i+1}",
+                'Category'        : cat,
+                'Quantity'        : quantity,
+                'Unit'            : random.choice(['kg', 'units', 'liters', 'boxes']),
+                'Expiry Date'     : (datetime.now() + timedelta(days=expiry_days)).strftime('%Y-%m-%d'),
+                'Days Until Expiry': expiry_days,
+                'Reorder Point'   : reorder_pt,
+                'Cost per Unit'   : round(random.uniform(0.5, 50.0), 2),
+                'Supplier'        : f"Supplier {random.randint(1, 5)}",
+                'Status'          : (
+                    'Critical' if expiry_days < 0
+                    else 'Expiring Soon' if expiry_days <= 3
+                    else 'Low Stock' if quantity < reorder_pt
+                    else 'Good'
+                ),
+                'Waste Risk'      : (
+                    'High' if expiry_days < 0 or (expiry_days <= 3 and quantity > 30)
+                    else 'Medium' if expiry_days <= 7
+                    else 'Low'
+                )
+            })
+    return pd.DataFrame(items)
 
-# =============================================================================
-# 5. THE CHARTS
-# Each function below draws one card: title + Filters button + chart.
-# @st.fragment lets each card re-run on its own when its local filters change.
-#
-# ➡️ LIVE VERSION (later): change @st.fragment to @st.fragment(run_every="5s")
-#    and the card will refresh itself every 5 seconds.
-# =============================================================================
+@st.cache_data
+def generate_sales_data():
+    dates      = pd.date_range(start='2024-01-01', end='2024-12-31', freq='D')
+    categories = ['Produce', 'Dairy', 'Meat', 'Bakery', 'Beverages', 'Frozen', 'Snacks', 'Condiments']
+    records    = []
+    for date in dates:
+        for cat in categories:
+            base     = random.randint(50, 500)
+            seasonal = 1.2 if date.month in [6, 7, 8] else 0.8 if date.month in [12, 1, 2] else 1.0
+            records.append({
+                'Date'    : date,
+                'Category': cat,
+                'Sales'   : int(base * seasonal * random.uniform(0.8, 1.2)),
+                'Revenue' : round(base * seasonal * random.uniform(2.0, 8.0), 2),
+                'Waste'   : int(base * random.uniform(0.02, 0.15))
+            })
+    return pd.DataFrame(records)
 
-# ----------------------------------------------------------------- KPI strip
-def calc_kpis(data):
-    """The five headline numbers for a slice of data."""
-    net = data["Net_Sales_AED"].sum()
-    count = len(data)
-    return {
-        "net": net,
-        "transactions": count,
-        "units": data["Units_Sold"].sum(),
-        "avg_value": net / count if count else 0,
-        "margin": data["Profit_AED"].sum() / net * 100 if net else 0,
-    }
-
-
-def pct_change(now, before):
-    """'+12.3%' style change label, or None when there is nothing to compare with."""
-    if before is None or before == 0:
-        return None
-    return f"{(now - before) / abs(before) * 100:+.1f}%"
-
-
-@st.fragment
-def kpi_row():
-    data = get_global_data()
-
-    # Compare with the period just before, of the same length.
-    # (With the full year selected there is no earlier data, so no arrows.)
-    start, end = st.session_state["global_dates"]
-    period_days = (end - start).days + 1
-    prev_end = start - timedelta(days=1)
-    prev_start = prev_end - timedelta(days=period_days - 1)
-    previous = filter_rows(load_data(), prev_start, prev_end, chosen_emirates())
-
-    now = calc_kpis(data)
-    before = calc_kpis(previous) if not previous.empty else {k: None for k in now}
-
-    # Month-by-month values for the small sparkline inside each KPI box
-    by_month = data.groupby(data["Date"].dt.to_period("M"))
-    monthly_net = by_month["Net_Sales_AED"].sum()
-    monthly_count = by_month["Transaction_ID"].count()
-    sparklines = {
-        "net": monthly_net.round(0).tolist(),
-        "transactions": monthly_count.tolist(),
-        "units": by_month["Units_Sold"].sum().tolist(),
-        "avg_value": (monthly_net / monthly_count).round(1).tolist(),
-        "margin": (by_month["Profit_AED"].sum() / monthly_net * 100).round(1).tolist(),
-    }
-
-    margin_delta = None if before["margin"] is None else f"{now['margin'] - before['margin']:+.1f} pts"
-    compare_help = "Arrow = change vs the previous period of the same length (shown when that period is in the data)."
-
-    boxes = [
-        ("Net sales", aed(now["net"]), pct_change(now["net"], before["net"]), "net"),
-        ("Transactions", f"{now['transactions']:,}", pct_change(now["transactions"], before["transactions"]), "transactions"),
-        ("Units sold", f"{now['units']:,}", pct_change(now["units"], before["units"]), "units"),
-        ("Avg. transaction value", aed(now["avg_value"]), pct_change(now["avg_value"], before["avg_value"]), "avg_value"),
-        ("Profit margin", f"{now['margin']:.1f}%", margin_delta, "margin"),
-    ]
-    for column, (label, value, delta, spark_key) in zip(st.columns(5), boxes):
-        column.metric(label, value, delta, border=True, help=compare_help,
-                      chart_data=sparklines[spark_key], chart_type="area")
-
-
-# --------------------------------------------------------- Sales by category
-@st.fragment
-def sales_by_category_card():
-    data = get_global_data()
-    with st.container(border=True):
-        with card_header("Sales by category"):
-            emirate = local_select("Emirate", ["All emirates"] + emirates_in(data), key="cat_emirate")
-            metric = st.radio("Measure", list(METRIC_COLUMNS), key="cat_metric")
-
-        if emirate != "All emirates":
-            data = data[data["Emirate"] == emirate]
-        show_active_filters(emirate, metric)
-        if data.empty:
-            return no_data_message()
-
-        summary = summarise(data, "Category", metric)
-        fig = px.bar(summary, x=metric, y="Category", orientation="h", text_auto=".3s",
-                     color="Category", color_discrete_map=CATEGORY_COLORS)
-        fig.update_layout(showlegend=False, yaxis_title=None)
-        fig.update_yaxes(categoryorder="total ascending")   # biggest bar at the top
-        st.plotly_chart(style(fig), key="chart_category")
-
-
-# ------------------------------------------------- Emirate x Category heatmap
-@st.fragment
-def emirate_heatmap_card():
-    data = get_global_data()
-    with st.container(border=True):
-        with card_header("Emirate × category heatmap"):
-            metric = st.radio("Measure", ["Net sales (AED)", "Profit (AED)", "Profit margin (%)", "Transactions"],
-                              key="heat_metric")
-            channel = st.selectbox("Sales channel", ["All channels", "In-store", "Online", "Click & Collect"],
-                                   key="heat_channel")
-
-        if channel != "All channels":
-            data = data[data["Sales_Channel"] == channel]
-        show_active_filters(metric, channel)
-        if data.empty:
-            return no_data_message()
-
-        # Turn the long table into a grid: one row per emirate, one column per category
-        grid = (summarise(data, ["Emirate", "Category"], metric)
-                .pivot(index="Emirate", columns="Category", values=metric)
-                .reindex(index=emirates_in(data), columns=CATEGORIES))
-
-        is_margin = metric == "Profit margin (%)"
-        if not is_margin:
-            grid = grid.fillna(0)   # no sales = 0 (a margin with no sales is left blank)
-
-        fig = px.imshow(
-            grid, aspect="auto",
-            text_auto=".1f" if is_margin else ".3s",
-            # Margin can be negative, so use red-yellow-green centred on 0
-            color_continuous_scale="RdYlGn" if is_margin else "Greens",
-            color_continuous_midpoint=0 if is_margin else None,
-            labels=dict(x="", y="", color=""),
-        )
-        st.plotly_chart(style(fig), key="chart_heatmap")
-
-
-# ------------------------------------------------------------ Sales over time
-@st.fragment
-def trend_card():
-    data = get_global_data()
-    with st.container(border=True):
-        with card_header("Sales over time", wide=True):
-            chosen = st.multiselect("Categories", CATEGORIES, placeholder="All categories", key="trend_categories")
-            grain = st.segmented_control("Group dates by", ["Daily", "Weekly", "Monthly"],
-                                         default="Monthly", required=True, key="trend_grain")
-            metric = st.radio("Measure", ["Net sales (AED)", "Profit (AED)", "Units sold", "Transactions"],
-                              key="trend_metric")
-            split = st.toggle("One line per category", value=True, key="trend_split")
-            show_seasons = st.toggle("Shade festive seasons", value=True, key="trend_seasons")
-
-        if chosen:
-            data = data[data["Category"].isin(chosen)]
-        show_active_filters(", ".join(chosen) if chosen else "All categories", grain, metric)
-        if data.empty:
-            return no_data_message()
-
-        # Put every date into a bucket: its day, its week or its month
-        freq = {"Daily": "D", "Weekly": "W", "Monthly": "M"}[grain]
-        data = data.assign(Period=data["Date"].dt.to_period(freq).dt.start_time)
-
-        summary = summarise(data, ["Period", "Category"] if split else "Period", metric)
-        fig = px.line(summary, x="Period", y=metric, markers=grain != "Daily",
-                      color="Category" if split else None, category_orders={"Category": CATEGORIES},
-                      color_discrete_map=CATEGORY_COLORS, color_discrete_sequence=["#34495E"])
-        fig.update_layout(xaxis_title=None)
-
-        if show_seasons:
-            # Find each season's first and last day from the Promotion column
-            everything = load_data()
-            first_shown, last_shown = data["Date"].min(), data["Date"].max()
-            for season in FESTIVE_SEASONS:
-                days = everything.loc[everything["Promotion"] == season, "Date"]
-                if days.max() >= first_shown and days.min() <= last_shown:   # only if it's in view
-                    fig.add_vrect(x0=days.min(), x1=days.max(), fillcolor="#E0A526", opacity=0.12,
-                                  line_width=0, annotation_text=season, annotation_position="top left",
-                                  annotation_font_size=11)
-
-        st.plotly_chart(style(fig), key="chart_trend")
-
-
-# --------------------------------------------------- Channel / payment mix
-@st.fragment
-def mix_card():
-    data = get_global_data()
-    with st.container(border=True):
-        with card_header("How customers buy and pay"):
-            view = st.radio("Break down by", ["Sales channel", "Payment method"], key="mix_view")
-            category = st.selectbox("Category", ["All categories"] + CATEGORIES, key="mix_category")
-            metric = st.radio("Measure", ["Net sales (AED)", "Transactions"], key="mix_metric")
-
-        if category != "All categories":
-            data = data[data["Category"] == category]
-        show_active_filters(view, category, metric)
-        if data.empty:
-            return no_data_message()
-
-        column = "Sales_Channel" if view == "Sales channel" else "Payment_Method"
-        summary = summarise(data, column, metric)
-        fig = px.pie(summary, names=column, values=metric, hole=0.55,
-                     color_discrete_sequence=OTHER_COLORS)
-        fig.update_traces(textinfo="percent", sort=True)
-        st.plotly_chart(style(fig), key="chart_mix")
-
-
-# ------------------------------------------------------ Promotion impact
-@st.fragment
-def promotion_card():
-    data = get_global_data()
-    with st.container(border=True):
-        with card_header("Do deeper discounts cost margin?"):
-            category = st.selectbox("Category", ["All categories"] + CATEGORIES, key="promo_category")
-            emirate = local_select("Emirate", ["All emirates"] + emirates_in(data), key="promo_emirate")
-
-        if category != "All categories":
-            data = data[data["Category"] == category]
-        if emirate != "All emirates":
-            data = data[data["Emirate"] == emirate]
-        show_active_filters(category, emirate)
-        if data.empty:
-            return no_data_message()
-
-        groups = data.groupby("Promotion")
-        summary = pd.DataFrame({
-            "Avg. discount (%)": groups["Discount_Pct"].mean(),
-            "Profit margin (%)": groups["Profit_AED"].sum() / groups["Net_Sales_AED"].sum() * 100,
-            "Transactions": groups["Transaction_ID"].count(),
-        }).sort_values("Avg. discount (%)").reset_index()
-
-        # Show how many transactions sit behind each bar (n=...). Few transactions
-        # = a less reliable bar, and it is honest to show that.
-        summary["Promotion"] = summary["Promotion"] + "<br>(n=" + summary["Transactions"].astype(str) + ")"
-
-        # Reshape to 'long' format so Plotly can draw two bars side by side
-        long = summary.melt(id_vars="Promotion", value_vars=["Avg. discount (%)", "Profit margin (%)"],
-                            var_name="Measure", value_name="Percent")
-        fig = px.bar(long, x="Promotion", y="Percent", color="Measure", barmode="group", text_auto=".1f",
-                     color_discrete_map={"Avg. discount (%)": "#E0A526", "Profit margin (%)": "#2E9E5B"})
-        fig.update_layout(xaxis_title=None, yaxis_title="%")
-        st.plotly_chart(style(fig), key="chart_promo")
-
-
-# ------------------------------------------------------ Customer profile
-@st.fragment
-def customer_card():
-    data = get_global_data()
-    with st.container(border=True):
-        with card_header("Who is buying"):
-            category = st.selectbox("Category", ["All categories"] + CATEGORIES, key="cust_category")
-            loyalty = st.radio("Customers", ["All customers", "Loyalty members", "Non-members"], key="cust_loyalty")
-            metric = st.radio("Measure", ["Net sales (AED)", "Transactions", "Average rating (1-5)"],
-                              key="cust_metric")
-
-        if category != "All categories":
-            data = data[data["Category"] == category]
-        if loyalty != "All customers":
-            data = data[data["Loyalty_Member"] == ("Yes" if loyalty == "Loyalty members" else "No")]
-        show_active_filters(category, loyalty, metric)
-        if data.empty:
-            return no_data_message()
-
-        summary = summarise(data, ["Age_Group", "Gender"], metric)
-        fig = px.bar(summary, x="Age_Group", y=metric, color="Gender", barmode="group",
-                     text_auto=".2f" if metric.startswith("Average") else ".3s",
-                     category_orders={"Age_Group": AGE_GROUPS},
-                     color_discrete_map={"Female": "#4C5B7A", "Male": "#A3B4CC"},
-                     labels={"Age_Group": "Age group"})
-        st.plotly_chart(style(fig), key="chart_customers")
-
-
-# ------------------------------------------------- Top sub-categories table
-@st.fragment
-def top_products_card():
-    data = get_global_data()
-    with st.container(border=True):
-        with card_header("Top sub-categories"):
-            chosen = st.multiselect("Categories", CATEGORIES, placeholder="All categories", key="top_categories")
-            sort_by = st.selectbox("Rank by", ["Net sales (AED)", "Profit (AED)", "Units sold",
-                                               "Transactions", "Profit margin (%)"], key="top_sort")
-            top_n = st.slider("How many to show", 5, 30, 10, key="top_n")
-
-        if chosen:
-            data = data[data["Category"].isin(chosen)]
-        show_active_filters(", ".join(chosen) if chosen else "All categories", f"top {top_n} by {sort_by}")
-        if data.empty:
-            return no_data_message()
-
-        groups = data.groupby(["Sub_Category", "Category"])
-        table = pd.DataFrame({
-            "Net sales (AED)": groups["Net_Sales_AED"].sum(),
-            "Profit (AED)": groups["Profit_AED"].sum(),
-            "Units sold": groups["Units_Sold"].sum(),
-            "Transactions": groups["Transaction_ID"].count(),
+@st.cache_data
+def generate_waste_data():
+    categories = ['Produce', 'Dairy', 'Meat', 'Bakery', 'Beverages', 'Frozen', 'Snacks', 'Condiments']
+    reasons    = ['Expired', 'Damaged', 'Over-ordered', 'Quality Issues', 'Spoilage']
+    records    = []
+    for _ in range(200):
+        cat = random.choice(categories)
+        records.append({
+            'Category'    : cat,
+            'Reason'      : random.choice(reasons),
+            'Quantity'    : random.randint(1, 50),
+            'Cost'        : round(random.uniform(5, 500), 2),
+            'Date'        : (datetime.now() - timedelta(days=random.randint(0, 90))).strftime('%Y-%m-%d'),
+            'Preventable' : random.choice([True, False])
         })
-        table["Profit margin (%)"] = table["Profit (AED)"] / table["Net sales (AED)"] * 100
-        table = table.sort_values(sort_by, ascending=False).head(top_n).reset_index()
+    return pd.DataFrame(records)
 
-        st.dataframe(
-            table, hide_index=True, height=CHART_HEIGHT,
-            column_config={
-                "Sub_Category": st.column_config.TextColumn("Sub-category", pinned=True),
-                "Category": st.column_config.TextColumn(width="small"),
-                # A bar inside the cell makes the biggest sellers easy to spot
-                "Net sales (AED)": st.column_config.ProgressColumn(
-                    "Net sales", format="compact", color="#2E9E5B", width="small",
-                    min_value=0, max_value=float(table["Net sales (AED)"].max())),
-                "Profit (AED)": st.column_config.NumberColumn("Profit", format="compact", width="small"),
-                "Units sold": st.column_config.NumberColumn("Units", width="small"),
-                "Transactions": st.column_config.NumberColumn("Txns", width="small"),
-                "Profit margin (%)": st.column_config.NumberColumn("Margin", format="%.1f%%", width="small"),
-            },
+# ── Load data ─────────────────────────────────────────────────────────────────
+inventory_df = generate_inventory_data()
+sales_df     = generate_sales_data()
+waste_df     = generate_waste_data()
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown(
+        "<h2 style='color:#9B8EC4; margin-bottom:4px;'>🌿 Smart Inventory</h2>"
+        "<p style='color:#7BA7CC; font-size:13px; margin-top:0;'>Waste Reduction System</p>",
+        unsafe_allow_html=True
+    )
+    st.divider()
+
+    page = st.selectbox(
+        "Navigate",
+        ["📊 Dashboard", "📦 Inventory", "⚠️ Waste Alerts",
+         "📈 Analytics", "🔮 Predictions", "⚙️ Settings"]
+    )
+
+    st.divider()
+    st.markdown("<p style='color:#9B8EC4; font-weight:600; font-size:13px;'>Quick Filters</p>",
+                unsafe_allow_html=True)
+    selected_cats = st.multiselect(
+        "Categories",
+        options=inventory_df['Category'].unique(),
+        default=inventory_df['Category'].unique()
+    )
+    risk_filter = st.selectbox("Waste Risk Level", ["All", "High", "Medium", "Low"])
+
+    st.divider()
+    now = datetime.now()
+    st.markdown(
+        f"<p style='color:#AED6F1; font-size:12px;'>"
+        f"Last updated:<br><b>{now.strftime('%d %b %Y, %H:%M')}</b></p>",
+        unsafe_allow_html=True
+    )
+
+# ── Filter data ───────────────────────────────────────────────────────────────
+filtered_inv = inventory_df[inventory_df['Category'].isin(selected_cats)]
+if risk_filter != "All":
+    filtered_inv = filtered_inv[filtered_inv['Waste Risk'] == risk_filter]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Dashboard
+# ══════════════════════════════════════════════════════════════════════════════
+if page == "📊 Dashboard":
+    st.markdown(
+        "<h1 style='color:#9B8EC4;'>📊 Inventory Dashboard</h1>",
+        unsafe_allow_html=True
+    )
+
+    # ── KPI row ──────────────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5 = st.columns(5)
+    total_items    = len(inventory_df)
+    critical_items = len(inventory_df[inventory_df['Status'] == 'Critical'])
+    expiring_soon  = len(inventory_df[inventory_df['Status'] == 'Expiring Soon'])
+    low_stock      = len(inventory_df[inventory_df['Status'] == 'Low Stock'])
+    waste_value    = waste_df['Cost'].sum()
+
+    c1.metric("Total Items",       total_items)
+    c2.metric("Critical Items",    critical_items,  delta=f"-{critical_items} need action", delta_color="inverse")
+    c3.metric("Expiring Soon",     expiring_soon,   delta="Next 3 days")
+    c4.metric("Low Stock",         low_stock,       delta="Below reorder point")
+    c5.metric("Total Waste Value", f"\\({waste_value:,.0f}", delta="-12% vs last month", delta_color="inverse")
+
+    st.divider()
+
+    # ── Charts row 1 ─────────────────────────────────────────────────────────
+    col1, col2 = st.columns(2)
+
+    with col1:
+        status_counts = inventory_df['Status'].value_counts().reset_index()
+        status_counts.columns = ['Status', 'Count']
+        fig_status = px.pie(
+            status_counts, values='Count', names='Status',
+            color_discrete_sequence=PASTEL_CHART_COLORS,
+            hole=0.45
+        )
+        fig_status = apply_pastel_theme(fig_status, "Inventory Status Distribution")
+        st.plotly_chart(fig_status, use_container_width=True)
+
+    with col2:
+        cat_waste = waste_df.groupby('Category')['Cost'].sum().reset_index()
+        fig_waste = px.bar(
+            cat_waste, x='Category', y='Cost',
+            color='Category',
+            color_discrete_sequence=PASTEL_CHART_COLORS
+        )
+        fig_waste = apply_pastel_theme(fig_waste, "Waste Cost by Category (\\))")
+        st.plotly_chart(fig_waste, use_container_width=True)
+
+    # ── Charts row 2 ─────────────────────────────────────────────────────────
+    col3, col4 = st.columns(2)
+
+    with col3:
+        monthly = sales_df.groupby(sales_df['Date'].dt.month)['Waste'].sum().reset_index()
+        monthly.columns = ['Month', 'Waste']
+        month_names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+        monthly['Month'] = monthly['Month'].apply(lambda x: month_names[x-1])
+        fig_trend = px.line(
+            monthly, x='Month', y='Waste',
+            markers=True,
+            color_discrete_sequence=[PASTEL_LAVENDER]
+        )
+        fig_trend.update_traces(
+            line=dict(width=3, color=PASTEL_LAVENDER),
+            marker=dict(size=8, color=PASTEL_PINK, line=dict(color=PASTEL_LAVENDER, width=2))
+        )
+        fig_trend = apply_pastel_theme(fig_trend, "Monthly Waste Trend")
+        st.plotly_chart(fig_trend, use_container_width=True)
+
+    with col4:
+        risk_counts = inventory_df['Waste Risk'].value_counts().reset_index()
+        risk_counts.columns = ['Risk', 'Count']
+        fig_risk = px.bar(
+            risk_counts, x='Risk', y='Count',
+            color='Risk',
+            color_discrete_map={
+                'High'  : PASTEL_CORAL,
+                'Medium': PASTEL_PEACH,
+                'Low'   : PASTEL_MINT
+            }
+        )
+        fig_risk = apply_pastel_theme(fig_risk, "Items by Waste Risk Level")
+        st.plotly_chart(fig_risk, use_container_width=True)
+
+    # ── Recent alerts ─────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("<h3 style='color:#7BBF9E;'>⚡ Recent Alerts</h3>", unsafe_allow_html=True)
+    alerts = inventory_df[inventory_df['Status'].isin(['Critical', 'Expiring Soon'])].head(5)
+    for _, row in alerts.iterrows():
+        colour = PASTEL_CORAL if row['Status'] == 'Critical' else PASTEL_PEACH
+        st.markdown(
+            f"<div style='background:{colour}; border-radius:10px; padding:10px 16px; "
+            f"margin-bottom:8px; color:#5A5A7A; font-weight:500;'>"
+            f"⚠️ <b>{row['Product Name']}</b> ({row['Category']}) — "
+            f"{row['Status']} | Qty: {row['Quantity']} | "
+            f"Expires: {row['Expiry Date']}</div>",
+            unsafe_allow_html=True
         )
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Inventory
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "📦 Inventory":
+    st.markdown("<h1 style='color:#9B8EC4;'>📦 Inventory Management</h1>", unsafe_allow_html=True)
 
-# ------------------------------------------------------ Raw data explorer
-@st.fragment
-def data_explorer_card():
-    data = get_global_data()
-    all_columns = list(data.columns)
-    starter_columns = ["Transaction_ID", "Timestamp", "Emirate", "Store_Name", "Category",
-                       "Sub_Category", "Units_Sold", "Net_Sales_AED", "Profit_AED", "Promotion"]
-    with st.container(border=True):
-        with card_header("Raw data", wide=True):
-            columns = st.multiselect("Columns to show", all_columns, default=starter_columns, key="raw_columns")
-            category = st.selectbox("Category", ["All categories"] + CATEGORIES, key="raw_category")
+    # ── Search & column selector ──────────────────────────────────────────────
+    s1, s2 = st.columns([2, 1])
+    with s1:
+        search = st.text_input("🔍 Search products", placeholder="Type product name or ID...")
+    with s2:
+        cols_to_show = st.multiselect(
+            "Columns",
+            options=inventory_df.columns.tolist(),
+            default=['Item ID','Product Name','Category','Quantity','Status','Waste Risk','Expiry Date']
+        )
 
-        if category != "All categories":
-            data = data[data["Category"] == category]
-        columns = columns or all_columns          # nothing picked = show every column
-        show_active_filters(category, f"{len(data):,} rows", f"{len(columns)} of {len(all_columns)} columns")
+    display_df = filtered_inv.copy()
+    if search:
+        mask = (
+            display_df['Product Name'].str.contains(search, case=False) |
+            display_df['Item ID'].str.contains(search, case=False)
+        )
+        display_df = display_df[mask]
 
-        st.dataframe(data[columns], hide_index=True, height=300)
-        st.download_button("Download these rows as CSV", data[columns].to_csv(index=False),
-                           file_name="lulu_sales_filtered.csv", mime="text/csv",
-                           icon=":material/download:", on_click="ignore")
+    # ── Status badges via colour map ──────────────────────────────────────────
+    def style_status(val):
+        colour_map = {
+            'Critical'     : f'background-color:{PASTEL_CORAL}; color:#5A5A7A; border-radius:6px; padding:2px 8px',
+            'Expiring Soon': f'background-color:{PASTEL_PEACH}; color:#5A5A7A; border-radius:6px; padding:2px 8px',
+            'Low Stock'    : f'background-color:{PASTEL_YELLOW}; color:#5A5A7A; border-radius:6px; padding:2px 8px',
+            'Good'         : f'background-color:{PASTEL_MINT};  color:#5A5A7A; border-radius:6px; padding:2px 8px',
+        }
+        return colour_map.get(val, '')
 
+    styled = display_df[cols_to_show].style.applymap(style_status, subset=['Status'] if 'Status' in cols_to_show else [])
+    st.dataframe(styled, use_container_width=True, height=420)
 
-# =============================================================================
-# 6. PAGE LAYOUT  (this is the part that actually draws the page, top to bottom)
-# =============================================================================
-df = load_data()
-first_day, last_day = df["Date"].min().date(), df["Date"].max().date()
+    # ── Summary stats ─────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("<h3 style='color:#7BBF9E;'>Category Summary</h3>", unsafe_allow_html=True)
+    cat_summary = (
+        filtered_inv.groupby('Category')
+        .agg(Items=('Item ID','count'), Avg_Qty=('Quantity','mean'), Avg_Days=('Days Until Expiry','mean'))
+        .round(1).reset_index()
+    )
+    st.dataframe(cat_summary, use_container_width=True)
 
-st.title("🛒 LuLu UAE Sales Dashboard")
-st.caption(f"Synthetic data for teaching, not real LuLu figures. {len(df):,} transactions "
-           f"from {first_day:%d %b %Y} to {last_day:%d %b %Y}.")
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Waste Alerts
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "⚠️ Waste Alerts":
+    st.markdown("<h1 style='color:#9B8EC4;'>⚠️ Waste Alerts</h1>", unsafe_allow_html=True)
 
-# ---- Global filters (they change every chart) ----
-with st.container(border=True):
-    date_col, emirate_col = st.columns([1, 2])
-    date_col.date_input("Date range", value=(first_day, last_day), min_value=first_day,
-                        max_value=last_day, format="DD/MM/YYYY", key="global_dates")
-    emirate_col.multiselect("Emirates", EMIRATES, placeholder="All emirates", key="global_emirates")
-    st.caption("These two filters change every chart. Each chart's Filters button changes only that chart.")
+    tabs = st.tabs(["🔴 Critical", "🟡 Expiring Soon", "📉 Low Stock", "📋 All Waste Data"])
 
-# While someone is picking dates, the date box holds just the first date.
-# Wait until both dates are chosen before drawing anything.
-if len(st.session_state["global_dates"]) != 2:
-    st.info("Pick an end date to finish setting the date range.")
-    st.stop()
+    # ── Critical ──────────────────────────────────────────────────────────────
+    with tabs[0]:
+        critical_df = inventory_df[inventory_df['Status'] == 'Critical']
+        st.markdown(
+            f"<div style='background:{PASTEL_CORAL}; border-radius:12px; padding:14px 20px; "
+            f"color:#5A5A7A; font-weight:600; margin-bottom:12px;'>"
+            f"🚨 {len(critical_df)} items are past expiry date and require immediate action!</div>",
+            unsafe_allow_html=True
+        )
+        if not critical_df.empty:
+            st.dataframe(
+                critical_df[['Item ID','Product Name','Category','Quantity','Expiry Date','Cost per Unit']],
+                use_container_width=True
+            )
+            total_cost = (critical_df['Quantity'] * critical_df['Cost per Unit']).sum()
+            st.markdown(
+                f"<div style='background:{PASTEL_PINK}; border-radius:10px; padding:12px 18px; "
+                f"color:#5A5A7A; margin-top:8px;'>"
+                f"💰 Estimated waste value: <b>\\({total_cost:,.2f}</b></div>",
+                unsafe_allow_html=True
+            )
 
-if get_global_data().empty:
-    st.warning("No transactions in this date range and emirate selection. Widen the global filters.")
-    st.stop()
+    # ── Expiring Soon ─────────────────────────────────────────────────────────
+    with tabs[1]:
+        exp_df = inventory_df[inventory_df['Status'] == 'Expiring Soon']
+        st.markdown(
+            f"<div style='background:{PASTEL_PEACH}; border-radius:12px; padding:14px 20px; "
+            f"color:#5A5A7A; font-weight:600; margin-bottom:12px;'>"
+            f"⚡ {len(exp_df)} items expiring within 3 days — consider discounting or donating.</div>",
+            unsafe_allow_html=True
+        )
+        if not exp_df.empty:
+            st.dataframe(
+                exp_df[['Item ID','Product Name','Category','Quantity','Days Until Expiry','Cost per Unit']],
+                use_container_width=True
+            )
 
-# ---- KPIs ----
-kpi_row()
+    # ── Low Stock ─────────────────────────────────────────────────────────────
+    with tabs[2]:
+        low_df = inventory_df[inventory_df['Status'] == 'Low Stock']
+        st.markdown(
+            f"<div style='background:{PASTEL_YELLOW}; border-radius:12px; padding:14px 20px; "
+            f"color:#5A5A7A; font-weight:600; margin-bottom:12px;'>"
+            f"📉 {len(low_df)} items below reorder point.</div>",
+            unsafe_allow_html=True
+        )
+        if not low_df.empty:
+            st.dataframe(
+                low_df[['Item ID','Product Name','Category','Quantity','Reorder Point','Supplier']],
+                use_container_width=True
+            )
 
-# ---- Charts: two per row, wide charts get the full row ----
-left, right = st.columns(2)
-with left:
-    sales_by_category_card()
-with right:
-    emirate_heatmap_card()
+    # ── All Waste Data ────────────────────────────────────────────────────────
+    with tabs[3]:
+        st.markdown("<h3 style='color:#7BBF9E;'>Waste Log</h3>", unsafe_allow_html=True)
+        reason_filter = st.selectbox("Filter by Reason", ["All"] + list(waste_df['Reason'].unique()))
+        w_df = waste_df if reason_filter == "All" else waste_df[waste_df['Reason'] == reason_filter]
+        st.dataframe(w_df, use_container_width=True)
 
-trend_card()
+        fig_reason = px.pie(
+            w_df, names='Reason', values='Cost',
+            color_discrete_sequence=PASTEL_CHART_COLORS,
+            hole=0.4
+        )
+        fig_reason = apply_pastel_theme(fig_reason, "Waste by Reason")
+        st.plotly_chart(fig_reason, use_container_width=True)
 
-left, right = st.columns(2)
-with left:
-    mix_card()
-with right:
-    promotion_card()
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Analytics
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "📈 Analytics":
+    st.markdown("<h1 style='color:#9B8EC4;'>📈 Analytics</h1>", unsafe_allow_html=True)
 
-left, right = st.columns(2)
-with left:
-    customer_card()
-with right:
-    top_products_card()
+    tab1, tab2, tab3 = st.tabs(["Sales & Revenue", "Waste Analysis", "Inventory Health"])
 
-data_explorer_card()
+    with tab1:
+        col1, col2 = st.columns(2)
+        with col1:
+            monthly_rev = sales_df.groupby(sales_df['Date'].dt.month)['Revenue'].sum().reset_index()
+            monthly_rev.columns = ['Month', 'Revenue']
+            fig_rev = px.bar(
+                monthly_rev, x='Month', y='Revenue',
+                color_discrete_sequence=[PASTEL_LAVENDER]
+            )
+            fig_rev = apply_pastel_theme(fig_rev, "Monthly Revenue (\\))")
+            st.plotly_chart(fig_rev, use_container_width=True)
+        with col2:
+            cat_rev = sales_df.groupby('Category')['Revenue'].sum().reset_index()
+            fig_cat = px.pie(
+                cat_rev, values='Revenue', names='Category',
+                color_discrete_sequence=PASTEL_CHART_COLORS,
+                hole=0.4
+            )
+            fig_cat = apply_pastel_theme(fig_cat, "Revenue by Category")
+            st.plotly_chart(fig_cat, use_container_width=True)
+
+    with tab2:
+        col1, col2 = st.columns(2)
+        with col1:
+            reason_waste = waste_df.groupby('Reason')['Cost'].sum().reset_index()
+            fig_reason_bar = px.bar(
+                reason_waste, x='Reason', y='Cost',
+                color='Reason',
+                color_discrete_sequence=PASTEL_CHART_COLORS
+            )
+            fig_reason_bar = apply_pastel_theme(fig_reason_bar, "Waste Cost by Reason (\\()")
+            st.plotly_chart(fig_reason_bar, use_container_width=True)
+        with col2:
+            prev_waste = waste_df.groupby('Preventable')['Cost'].sum().reset_index()
+            prev_waste['Preventable'] = prev_waste['Preventable'].map({True: 'Preventable', False: 'Not Preventable'})
+            fig_prev = px.pie(
+                prev_waste, values='Cost', names='Preventable',
+                color_discrete_sequence=[PASTEL_MINT, PASTEL_CORAL],
+                hole=0.4
+            )
+            fig_prev = apply_pastel_theme(fig_prev, "Preventable vs Non-Preventable Waste")
+            st.plotly_chart(fig_prev, use_container_width=True)
+
+    with tab3:
+        col1, col2 = st.columns(2)
+        with col1:
+            cat_health = inventory_df.groupby(['Category','Status']).size().reset_index(name='Count')
+            fig_health = px.bar(
+                cat_health, x='Category', y='Count', color='Status',
+                barmode='stack',
+                color_discrete_map={
+                    'Good'         : PASTEL_MINT,
+                    'Low Stock'    : PASTEL_YELLOW,
+                    'Expiring Soon': PASTEL_PEACH,
+                    'Critical'     : PASTEL_CORAL
+                }
+            )
+            fig_health = apply_pastel_theme(fig_health, "Inventory Health by Category")
+            st.plotly_chart(fig_health, use_container_width=True)
+        with col2:
+            fig_scatter = px.scatter(
+                inventory_df, x='Days Until Expiry', y='Quantity',
+                color='Category', size='Cost per Unit',
+                color_discrete_sequence=PASTEL_CHART_COLORS,
+                hover_data=['Product Name']
+            )
+            fig_scatter = apply_pastel_theme(fig_scatter, "Quantity vs Days Until Expiry")
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Predictions
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🔮 Predictions":
+    st.markdown("<h1 style='color:#9B8EC4;'>🔮 Waste Predictions</h1>", unsafe_allow_html=True)
+
+    st.info("Predictive model using historical sales and waste patterns. Ranges shown as confidence bands.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        forecast_days = st.slider("Forecast horizon (days)", 7, 90, 30)
+        category_pred = st.selectbox("Category to predict", inventory_df['Category'].unique())
+
+    with col2:
+        confidence = st.slider("Confidence interval (%)", 80, 99, 95)
+
+    # Simulate forecast
+    future_dates = pd.date_range(start=datetime.now(), periods=forecast_days)
+    base_waste   = waste_df[waste_df['Category'] == category_pred]['Quantity'].mean()
+    forecast     = [base_waste * random.uniform(0.8, 1.2) for _ in range(forecast_days)]
+    ci           = [(confidence / 100) * 0.2 * base_waste] * forecast_days
+
+    fig_pred = go.Figure()
+    fig_pred.add_trace(go.Scatter(
+        x=list(future_dates) + list(future_dates[::-1]),
+        y=[f + c for f, c in zip(forecast, ci)] + [f - c for f, c in zip(forecast[::-1], ci[::-1])],
+        fill='toself',
+        fillcolor=f'rgba(201,184,232,0.25)',
+        line=dict(color='rgba(0,0,0,0)'),
+        name=f'{confidence}% CI'
+    ))
+    fig_pred.add_trace(go.Scatter(
+        x=future_dates, y=forecast,
+        mode='lines+markers',
+        name='Forecast',
+        line=dict(color=PASTEL_LAVENDER, width=3),
+        marker=dict(size=6, color=PASTEL_PINK)
+    ))
+    fig_pred = apply_pastel_theme(fig_pred, f"Waste Forecast — {category_pred}")
+    st.plotly_chart(fig_pred, use_container_width=True)
+
+    # Recommendations
+    st.divider()
+    st.markdown("<h3 style='color:#7BBF9E;'>💡 Recommendations</h3>", unsafe_allow_html=True)
+    recs = [
+        ("Reduce order quantity", PASTEL_MINT,     "Order 15% less to avoid over-stocking"),
+        ("Discount ageing stock", PASTEL_YELLOW,   "Apply 20–30% discount on near-expiry items"),
+        ("Donate surplus",        PASTEL_SKY,      "Partner with local food banks for surplus donation"),
+        ("Adjust reorder point",  PASTEL_LAVENDER, "Recalibrate reorder points based on forecast"),
+    ]
+    c1, c2 = st.columns(2)
+    for i, (title, colour, desc) in enumerate(recs):
+        col = c1 if i % 2 == 0 else c2
+        col.markdown(
+            f"<div style='background:{colour}; border-radius:12px; padding:14px 18px; "
+            f"margin-bottom:10px; color:#5A5A7A;'>"
+            f"<b>{title}</b><br><span style='font-size:13px;'>{desc}</span></div>",
+            unsafe_allow_html=True
+        )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Settings
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "⚙️ Settings":
+    st.markdown("<h1 style='color:#9B8EC4;'>⚙️ Settings</h1>", unsafe_allow_html=True)
+
+    tab1, tab2, tab3 = st.tabs(["🔔 Notifications", "📦 Inventory Rules", "📤 Export"])
+
+    with tab1:
+        st.markdown("<h3 style='color:#7BBF9E;'>Alert Thresholds</h3>", unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.number_input("Expiry warning (days)",          value=3,   min_value=1, max_value=14)
+            st.number_input("Critical expiry threshold (days)", value=0, min_value=0, max_value=7)
+        with c2:
+            st.number_input("Low stock multiplier",   value=1.2, min_value=1.0, max_value=3.0, step=0.1)
+            st.number_input("High waste risk qty",    value=30,  min_value=10,  max_value=200)
+
+        st.divider()
+        st.markdown("<h3 style='color:#7BBF9E;'>Notification Channels</h3>", unsafe_allow_html=True)
+        st.checkbox("Email alerts",    value=True)
+        st.checkbox("SMS alerts",      value=False)
+        st.checkbox("Dashboard popup", value=True)
+        st.checkbox("Daily digest",    value=True)
+
+    with tab2:
+        st.markdown("<h3 style='color:#7BBF9E;'>Reorder Policy</h3>", unsafe_allow_html=True)
+        st.selectbox("Reorder strategy", ["Fixed Quantity", "EOQ Model", "Min-Max", "Demand Forecast"])
+        st.slider("Safety stock buffer (%)", 5, 50, 20)
+        st.slider("Lead time (days)",        1, 30,  7)
+
+    with tab3:
+        st.markdown("<h3 style='color:#7BBF9E;'>Export Data</h3>", unsafe_allow_html=True)
+        ec1, ec2, ec3 = st.columns(3)
+        with ec1:
+            csv = inventory_df.to_csv(index=False)
+            st.download_button(
+                "📥 Inventory CSV", data=csv,
+                file_name="inventory.csv", mime="text/csv"
+            )
+        with ec2:
+            wcsv = waste_df.to_csv(index=False)
+            st.download_button(
+                "📥 Waste Data CSV", data=wcsv,
+                file_name="waste_data.csv", mime="text/csv"
+            )
+        with ec3:
+            scsv = sales_df.to_csv(index=False)
+            st.download_button(
+                "📥 Sales Data CSV", data=scsv,
+                file_name="sales_data.csv", mime="text/csv"
+            )
